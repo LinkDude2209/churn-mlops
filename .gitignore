@@ -16,3 +16,8 @@ __pycache__/
 
 # IDE
 .vscode/
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log

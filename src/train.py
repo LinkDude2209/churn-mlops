@@ -3,6 +3,8 @@ import os
 import json
 import joblib
 import pandas as pd
+import mlflow
+import mlflow.sklearn
 
 from sklearn.model_selection import train_test_split
 from sklearn.compose import ColumnTransformer
@@ -35,6 +37,10 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 RANDOM_STATE = 42
 
+# MLflow configuration
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
+mlflow.set_experiment("Customer Churn Prediction")
+
 
 # ----------------------------------
 # 2. LOAD DATASET
@@ -51,19 +57,12 @@ print("Dataset shape:", df.shape)
 # 3. DATA CLEANING
 # ----------------------------------
 
-# Convert TotalCharges to numeric.
-# Invalid or empty values become NaN.
-
 df["TotalCharges"] = pd.to_numeric(
     df["TotalCharges"],
     errors="coerce"
 )
 
-# Remove customer ID because it is not predictive.
-
 df.drop(columns=["customerID"], inplace=True)
-
-# Convert target labels to binary.
 
 df["Churn"] = df["Churn"].map({
     "Yes": 1,
@@ -151,7 +150,7 @@ models = {
 
 
 # ----------------------------------
-# 8. TRAIN AND EVALUATE
+# 8. TRAIN, EVALUATE AND TRACK
 # ----------------------------------
 
 results = {}
@@ -161,47 +160,74 @@ for name, classifier in models.items():
 
     print(f"\nTraining {name}...")
 
-    pipeline = Pipeline([
-        ("preprocessor", preprocessor),
-        ("classifier", classifier)
-    ])
+    with mlflow.start_run(run_name=name):
 
-    pipeline.fit(X_train, y_train)
+        pipeline = Pipeline([
+            ("preprocessor", preprocessor),
+            ("classifier", classifier)
+        ])
 
-    predictions = pipeline.predict(X_test)
-    probabilities = pipeline.predict_proba(X_test)[:, 1]
+        pipeline.fit(X_train, y_train)
 
-    metrics = {
-        "accuracy": float(accuracy_score(y_test, predictions)),
-        "precision": float(precision_score(
-            y_test, predictions, zero_division=0
-        )),
-        "recall": float(recall_score(
-            y_test, predictions, zero_division=0
-        )),
-        "f1_score": float(f1_score(
-            y_test, predictions, zero_division=0
-        )),
-        "roc_auc": float(roc_auc_score(
-            y_test, probabilities
+        predictions = pipeline.predict(X_test)
+        probabilities = pipeline.predict_proba(X_test)[:, 1]
+
+        metrics = {
+            "accuracy": float(accuracy_score(y_test, predictions)),
+            "precision": float(precision_score(
+                y_test, predictions, zero_division=0
+            )),
+            "recall": float(recall_score(
+                y_test, predictions, zero_division=0
+            )),
+            "f1_score": float(f1_score(
+                y_test, predictions, zero_division=0
+            )),
+            "roc_auc": float(roc_auc_score(
+                y_test, probabilities
+            ))
+        }
+
+        results[name] = metrics
+        trained_models[name] = pipeline
+
+        # Log model parameters
+        params = classifier.get_params()
+
+        mlflow.log_params({
+            key: value
+            for key, value in params.items()
+            if isinstance(value, (str, int, float, bool))
+            and value is not None
+        })
+
+        # Log evaluation metrics
+        mlflow.log_metrics(metrics)
+
+        # Log model artifact
+        mlflow.sklearn.log_model(
+            pipeline,
+            name="model",
+            skops_trusted_types=[
+                "numpy.dtype",
+                "sklearn.tree._tree.Tree"
+            ]
+        )
+
+        # Add model name as a tag
+        mlflow.set_tag("model_name", name)
+        print("\nResults:", name)
+        print(json.dumps(metrics, indent=4))
+
+        print("\nClassification Report:")
+        print(classification_report(
+            y_test,
+            predictions,
+            zero_division=0
         ))
-    }
 
-    results[name] = metrics
-    trained_models[name] = pipeline
-
-    print("\nResults:", name)
-    print(json.dumps(metrics, indent=4))
-
-    print("\nClassification Report:")
-    print(classification_report(
-        y_test,
-        predictions,
-        zero_division=0
-    ))
-
-    print("Confusion Matrix:")
-    print(confusion_matrix(y_test, predictions))
+        print("Confusion Matrix:")
+        print(confusion_matrix(y_test, predictions))
 
 
 # ----------------------------------
@@ -219,7 +245,7 @@ print("\nBest model:", best_model_name)
 
 
 # ----------------------------------
-# 10. SAVE MODEL
+# 10. SAVE MODEL USING JOBLIB
 # ----------------------------------
 
 model_path = os.path.join(
@@ -231,7 +257,7 @@ joblib.dump(best_model, model_path)
 
 
 # ----------------------------------
-# 11. SAVE METRICS
+# 11. SAVE METRICS AS JSON
 # ----------------------------------
 
 output = {
@@ -249,6 +275,10 @@ with open(
     json.dump(output, file, indent=4)
 
 
+# ----------------------------------
+# 12. TRAINING SUMMARY
+# ----------------------------------
+
 print("\n--------------------------------")
 print("TRAINING COMPLETED SUCCESSFULLY")
 print("--------------------------------")
@@ -256,3 +286,5 @@ print("--------------------------------")
 print("Selected model:", best_model_name)
 print("Model saved at:", model_path)
 print("Metrics saved at: models/metrics.json")
+print("MLflow experiment: Customer Churn Prediction")
+print("MLflow tracking directory: ./mlruns")
